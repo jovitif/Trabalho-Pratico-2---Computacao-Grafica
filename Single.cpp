@@ -1,20 +1,20 @@
-/**********************************************************************************
-// Single (Código Fonte)
-//
-// Criação:     27 Abr 2016
-// Atualização: 15 Set 2023
-// Compilador:  Visual C++ 2022
-//
-// Descrição:   Constrói cena com um único buffer de vértices e índices
-//
-**********************************************************************************/
-
 #include "DXUT.h"
 #include <windows.h>
 #include <iostream>
+#include <string> 
 using namespace std;
 
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <DirectXMath.h>
+
 // ------------------------------------------------------------------------------
+
+struct ObjData {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+};
 
 struct ObjectConstants
 {
@@ -36,7 +36,7 @@ private:
     Mesh* mesh = nullptr;
 
     Timer timer;
-    bool spinning = true;
+    bool spinning = false; // O objeto não gira por padrão
 
     XMFLOAT4X4 Identity = {};
     XMFLOAT4X4 View = {};
@@ -47,16 +47,121 @@ private:
     float radius = 0;
     float lastMousePosX = 0;
     float lastMousePosY = 0;
+    bool topView = false;
+    float offset = 3.0f;
+    Object obj;
+    bool boxCriada = false;
+    uint selecionado = -1; // mostrar o item selecionado 
+    //contadores
+    uint indexCount = 0;
+    uint vertexCount = 0;
+
+    vector<Vertex> vertices;
+
+    uint totalVertexCount = 0;
+    uint totalIndexCount = 0;
+    uint vbSize = 0;
+
+    uint ibSize = 0;
+
+    uint k = 0;
+
+    vector<uint> indices;
+
+    int boxCount = 0;
+
+    uint cbIndex = 1; // inicialmente um objeto em cena
 
 public:
     void Init();
     void Update();
     void Draw();
     void Finalize();
-
+    ObjData LoadOBJ(const std::string& filename);
     void BuildRootSignature();
     void BuildPipelineState();
 };
+
+ObjData Single::LoadOBJ(const std::string& filename) {
+    ObjData objData;
+    std::ifstream file(filename);
+    std::string line;
+
+    std::vector<XMFLOAT3> positions;
+    std::vector<XMFLOAT3> normals;
+    std::vector<uint32_t> faces;
+
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        std::string prefix;
+        iss >> prefix;
+
+        if (prefix == "v") {
+            // Vértices (posições)
+            XMFLOAT3 position;
+            iss >> position.x >> position.y >> position.z;
+            positions.push_back(position);
+        }
+        else if (prefix == "vt") {
+            // Normais
+            XMFLOAT3 normal;
+            iss >> normal.x >> normal.y >> normal.z;
+            normals.push_back(normal);
+        }
+        else if (prefix == "f") {
+            // Faces (índices de vértices, coordenadas de textura e normais)
+            uint32_t v1, v2, v3;
+            uint32_t vt1, vt2, vt3; // Coordenadas de textura
+            uint32_t n1, n2, n3;    // Normais
+            char slash;
+
+            // Verifica se o formato é v/vt/vn
+            std::string faceStr;
+            getline(iss, faceStr);
+            std::istringstream faceStream(faceStr);
+
+            if (faceStr.find("//") != std::string::npos) {
+
+                // Leitura do formato v//vn (sem coordenadas de textura)
+                faceStream >> v1 >> slash >> slash >> n1
+                    >> v2 >> slash >> slash >> n2
+                    >> v3 >> slash >> slash >> n3;
+
+                // Armazena os índices dos vértices (convertendo de 1-based para 0-based)
+                objData.indices.push_back(v1 - 1);
+                objData.indices.push_back(v2 - 1);
+                objData.indices.push_back(v3 - 1);
+
+               
+            }
+            else {
+
+                // Leitura do formato v/vt/vn
+                faceStream >> v1 >> slash >> vt1 >> slash >> n1
+                    >> v2 >> slash >> vt2 >> slash >> n2
+                    >> v3 >> slash >> vt3 >> slash >> n3;
+
+                // Armazena os índices dos vértices (convertendo de 1-based para 0-based)
+                objData.indices.push_back(v1 - 1);
+                objData.indices.push_back(v2 - 1);
+                objData.indices.push_back(v3 - 1);
+
+
+
+
+            }
+        }
+
+    }
+    for (auto& pos : positions) {
+        Vertex vertex;
+        vertex.pos = pos;
+        vertex.color = XMFLOAT4(DirectX::Colors::DimGray); // Definir cor padrão
+        objData.vertices.push_back(vertex);
+    }
+
+    return objData;
+}
 
 // ------------------------------------------------------------------------------
 
@@ -90,62 +195,17 @@ void Single::Init()
         window->AspectRatio(), 
         1.0f, 100.0f));
 
-    // ----------------------------------------
-    // Criação da Geometria: Vértices e Índices
-    // ----------------------------------------
+    Grid grid(6.0f, 6.0f, 30, 30);
 
-    Box box(2.0f, 2.0f, 2.0f);
-    Cylinder cylinder(1.0f, 0.5f, 3.0f, 20, 10);
-    Sphere sphere(1.0f, 20, 20);
-    Grid grid(3.0f, 3.0f, 20, 20);
+    totalVertexCount = (grid.VertexCount()); // quantidade de vertices
 
-    // ---------------------------
-    // União de Vértices e Índices
-    // ---------------------------
+    vbSize = totalVertexCount * sizeof(Vertex); // tamanho em bytes dos vértices
 
-    // quantidade total de vértices
-    uint totalVertexCount = (
-        box.VertexCount() +
-        cylinder.VertexCount() +
-        sphere.VertexCount() +
-        grid.VertexCount()
-        );
+    totalIndexCount = (grid.IndexCount());     // quantidade total de índices
 
-    // tamanho em bytes dos vértices
-    const uint vbSize = totalVertexCount * sizeof(Vertex);
+    ibSize = totalIndexCount * sizeof(uint);     // tamanho em bytes dos índices
 
-    // quantidade total de índices
-    uint totalIndexCount = (
-        box.IndexCount() +
-        cylinder.IndexCount() +
-        sphere.IndexCount() +
-        grid.IndexCount()
-        );
-
-    // tamanho em bytes dos índices
-    const uint ibSize = totalIndexCount * sizeof(uint);
-
-    // junta todos os vértices em um único vetor
-    vector<Vertex> vertices(totalVertexCount);
-
-    uint k = 0;
-    for (uint i = 0; i < box.VertexCount(); ++i, ++k)
-    {
-        vertices[k].pos = box.vertices[i].pos;
-        vertices[k].color = XMFLOAT4(DirectX::Colors::Orange);
-    }
-
-    for (uint i = 0; i < cylinder.VertexCount(); ++i, ++k)
-    {
-        vertices[k].pos = cylinder.vertices[i].pos;
-        vertices[k].color = XMFLOAT4(DirectX::Colors::Yellow);
-    }
-
-    for (uint i = 0; i < sphere.VertexCount(); ++i, ++k)
-    {
-        vertices[k].pos = sphere.vertices[i].pos;
-        vertices[k].color = XMFLOAT4(DirectX::Colors::Crimson);
-    }
+    vertices.resize(totalVertexCount);    // junta todos os vértices em um único vetor
 
     for (uint i = 0; i < grid.VertexCount(); ++i, ++k)
     {
@@ -154,77 +214,20 @@ void Single::Init()
     }
 
     // junta todos os índices em um único vetor
-    vector<uint> indices;
-
-    indices.insert(indices.end(), begin(box.indices), end(box.indices));
-    indices.insert(indices.end(), begin(cylinder.indices), end(cylinder.indices));
-    indices.insert(indices.end(), begin(sphere.indices), end(sphere.indices));
+ 
     indices.insert(indices.end(), begin(grid.indices), end(grid.indices));
 
-    // ------------------------
-    // Definição das Sub-Malhas
-    // ------------------------
-
-    // define os parâmetros das sub-malhas
-    SubMesh boxSubMesh;
-    boxSubMesh.indexCount = uint(box.IndexCount());
-    boxSubMesh.startIndex = 0;
-    boxSubMesh.baseVertex = 0;
-
-    SubMesh cylinderSubMesh;
-    cylinderSubMesh.indexCount = uint(cylinder.IndexCount());
-    cylinderSubMesh.startIndex = uint(box.IndexCount());
-    cylinderSubMesh.baseVertex = uint(box.VertexCount());
-
-    SubMesh sphereSubMesh;
-    sphereSubMesh.indexCount = uint(sphere.IndexCount());
-    sphereSubMesh.startIndex = uint(box.IndexCount() + cylinder.IndexCount());
-    sphereSubMesh.baseVertex = uint(box.VertexCount() + cylinder.VertexCount());
-
+  
     SubMesh gridSubMesh;
     gridSubMesh.indexCount = uint(grid.IndexCount());
-    gridSubMesh.startIndex = uint(box.IndexCount() + cylinder.IndexCount() + sphere.IndexCount());
-    gridSubMesh.baseVertex = uint(box.VertexCount() + cylinder.VertexCount() + sphere.VertexCount());
-
-    // --------------------
-    // Definição de Objetos
-    // --------------------
-
-    Object obj;
-
-    // box
-    XMStoreFloat4x4(&obj.world,
-        XMMatrixScaling(0.4f, 0.4f, 0.4f) *
-        XMMatrixTranslation(-1.0f, 0.41f, 1.0f));
-    obj.cbIndex = 0;
-    obj.submesh = boxSubMesh;
-    scene.push_back(obj);
-
-    // cylinder
-    XMStoreFloat4x4(&obj.world,
-        XMMatrixScaling(0.5f, 0.5f, 0.5f) *
-        XMMatrixTranslation(1.0f, 0.75f, -1.0f));
-    obj.cbIndex = 1;
-    obj.submesh = cylinderSubMesh;
-    scene.push_back(obj);
-
-    // sphere
-    XMStoreFloat4x4(&obj.world,
-        XMMatrixScaling(0.5f, 0.5f, 0.5f) *
-        XMMatrixTranslation(0.0f, 0.5f, 0.0f));
-    obj.cbIndex = 2;
-    obj.submesh = sphereSubMesh;
-    scene.push_back(obj);
-
-    // grid
+    gridSubMesh.startIndex = 0;
+    gridSubMesh.baseVertex = 0;
+  
     obj.world = Identity;
-    obj.cbIndex = 3;
+    obj.cbIndex = 0;
     obj.submesh = gridSubMesh;
     scene.push_back(obj);
 
-    // ---------------------------------------------------------------
-    // Alocação e Cópia de Vertex, Index e Constant Buffers para a GPU
-    // ---------------------------------------------------------------
 
     // cria malha 3D
     mesh = new Mesh();
@@ -254,123 +257,825 @@ void Single::Update()
     // ativa ou desativa o giro do objeto
     if (input->KeyPress('S'))
     {
-        spinning = !spinning;
-
-        if (spinning)
-            timer.Start();
-        else
-            timer.Stop();
+       
     }
     // b: box, c:cylinder, s:sphere, g: geosphere, p: plane (grid), q:quad
     if (input->KeyPress('B')) {
-        OutputDebugString("Box\n");
+        OutputDebugString("Box criada\n");
+        graphics->ResetCommands();
+
+        Box newBox(2.0f, 2.0f, 2.0f); //Cria BOX
+
+        uint newTotalVertexCount = totalVertexCount + newBox.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newBox.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+        for (uint i{}; i < totalVertexCount; i++, k++) { //Copia dados do vetor antigo
+            aux[i].pos = vertices[i].pos;
+            aux[i].color = vertices[i].color;
+        }
+
+        for (uint i{}; i < newBox.VertexCount(); i++, k++) {
+            aux[k].pos = newBox.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newBox.indices), end(newBox.indices)); //Insere em vector de indices
+
+        SubMesh newBoxSubMesh; //Definindo subMalha
+        newBoxSubMesh.indexCount = uint(newBox.IndexCount());
+        newBoxSubMesh.startIndex = totalIndexCount;
+        newBoxSubMesh.baseVertex = totalVertexCount;
+
+        //Definição do Objeto
+        Object obj;
+
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.4f, 0.4f, 0.4f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+        obj.cbIndex = cbIndex; //Recebe numero de objetos *COMEÇA COM UM POR JA INICIAR COM O GRID*
+        obj.submesh = newBoxSubMesh; //Recebe submalha da nova BOX
+        scene.push_back(obj); //Coloca no vetor
+
+        cbIndex++; //Atualiza quantidade de objetos na cena
+
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        // ---------------------------------------
+
+        graphics->SubmitCommands();
     }
+
     else if (input->KeyPress('C')) {
         OutputDebugString("Cylinder\n");
+        graphics->ResetCommands();
+
+        Cylinder newCylinder(1.0f, 0.5f, 3.0f, 20, 10); //Cria novo Cylinder
+
+        uint newTotalVertexCount = totalVertexCount + newCylinder.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newCylinder.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i];
+        }
+
+        for (uint i{}; i < newCylinder.VertexCount(); i++, k++) {
+            aux[k].pos = newCylinder.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newCylinder.indices), end(newCylinder.indices));
+
+        SubMesh newCylinderSubMesh;
+        newCylinderSubMesh.indexCount = uint(newCylinder.IndexCount());
+        newCylinderSubMesh.startIndex = totalIndexCount;
+        newCylinderSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        // cylinder
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.5f, 0.5f, 0.5f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+        obj.cbIndex = cbIndex;
+        obj.submesh = newCylinderSubMesh;
+        scene.push_back(obj);
+
+        cbIndex++;
+
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('S')) {
         OutputDebugString("Sphere\n");
+        graphics->ResetCommands();
+
+        Sphere newSphere(1.0f, 20, 20); //Cria nova Sphere
+
+        uint newTotalVertexCount = totalVertexCount + newSphere.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newSphere.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i];
+        }
+
+        for (uint i{}; i < newSphere.VertexCount(); i++, k++) {
+            aux[k].pos = newSphere.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newSphere.indices), end(newSphere.indices));
+
+        SubMesh newSphereSubMesh;
+        newSphereSubMesh.indexCount = uint(newSphere.IndexCount());
+        newSphereSubMesh.startIndex = totalIndexCount;
+        newSphereSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        // Sphere
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.5f, 0.5f, 0.5f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+        obj.cbIndex = cbIndex;
+        obj.submesh = newSphereSubMesh;
+        scene.push_back(obj);
+
+        cbIndex++;
+
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('G')) {
         OutputDebugString("Geosphere\n");
+        graphics->ResetCommands();
+
+        GeoSphere newGeoSphere(1.0f, 20); //Cria nova GeoSphere
+
+        uint newTotalVertexCount = totalVertexCount + newGeoSphere.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newGeoSphere.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i];
+        }
+
+        for (uint i{}; i < newGeoSphere.VertexCount(); i++, k++) {
+            aux[k].pos = newGeoSphere.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newGeoSphere.indices), end(newGeoSphere.indices));
+
+        SubMesh newGeoSphereSubMesh;
+        newGeoSphereSubMesh.indexCount = uint(newGeoSphere.IndexCount());
+        newGeoSphereSubMesh.startIndex = totalIndexCount;
+        newGeoSphereSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        // GeoSphere
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.5f, 0.5f, 0.5f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+        obj.cbIndex = cbIndex;
+        obj.submesh = newGeoSphereSubMesh;
+        scene.push_back(obj);
+
+        cbIndex++;
+
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('P')) {
         OutputDebugString("Plane (grid)\n");
+        graphics->ResetCommands();
+
+        Grid newGrid(3.0f, 3.0f, 20, 20); //Cria novo Grid
+
+        uint newTotalVertexCount = totalVertexCount + newGrid.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newGrid.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i];
+        }
+
+        for (uint i{}; i < newGrid.VertexCount(); i++, k++) {
+            aux[k].pos = newGrid.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newGrid.indices), end(newGrid.indices));
+
+        SubMesh newGridSubMesh;
+        newGridSubMesh.indexCount = uint(newGrid.IndexCount());
+        newGridSubMesh.startIndex = totalIndexCount;
+        newGridSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        // Grid
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.5f, 0.5f, 0.5f) *
+            XMMatrixTranslation(0.0f, 0.5f, 0.0f));
+        obj.cbIndex = cbIndex;
+        obj.submesh = newGridSubMesh;
+        scene.push_back(obj);
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('Q')) {
         OutputDebugString("Quad\n");
+        graphics->ResetCommands();
+
+        Quad newQuad(2.0f, 2.0f); //Cria novo Quad
+
+        uint newTotalVertexCount = totalVertexCount + newQuad.VertexCount(); //Calcula quantidade de novos vertices
+
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex); //Calcula vbSize nova
+
+        uint newTotalIndexCount = totalIndexCount + newQuad.IndexCount(); //Calcula quantidade novos indices
+
+        const uint ibSize = newTotalIndexCount * sizeof(uint); //Calcula ibsize nova
+
+        std::vector<Vertex> aux(newTotalVertexCount); // Cria um std::vector com newTotalVertexCount elementos.
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i];
+        }
+
+        for (uint i{}; i < newQuad.VertexCount(); i++, k++) {
+            aux[k].pos = newQuad.vertices[i].pos;
+            aux[k].color = XMFLOAT4(DirectX::Colors::DimGray);
+        }
+
+        indices.insert(indices.end(), begin(newQuad.indices), end(newQuad.indices));
+
+        SubMesh newQuadSubMesh;
+        newQuadSubMesh.indexCount = uint(newQuad.IndexCount());
+        newQuadSubMesh.startIndex = totalIndexCount;
+        newQuadSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        // Quad
+        XMStoreFloat4x4(&obj.world,
+            XMMatrixScaling(0.5f, 0.5f, 0.5f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+        obj.cbIndex = cbIndex;
+        obj.submesh = newQuadSubMesh;
+        scene.push_back(obj);
+
+        cbIndex++;
+
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        //OutputDebugString(std::to_string(totalVertexCount).c_str());
+
+        vertices = aux;
+
+        //mesh = new Mesh();
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     //Ball, Capsule, House, Monkey e Thorus
     else if (input->KeyPress('1')) {
         OutputDebugString("Ball\n");
-    }
+        graphics->ResetCommands();
+
+        // Carregar o arquivo .obj
+        ObjData ballData = LoadOBJ("ball.obj");
+
+        // Atualizar a quantidade de vértices e índices
+        uint newTotalVertexCount = totalVertexCount + uint(ballData.vertices.size());
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex);
+
+        uint newTotalIndexCount = totalIndexCount + uint(ballData.indices.size());
+        const uint ibSize = newTotalIndexCount * sizeof(uint);
+
+        // Expandir o vetor de vértices e índices
+        std::vector<Vertex> aux(newTotalVertexCount);
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i]; // Copia os vértices já existentes
+        }
+
+        for (uint i{}; i < ballData.vertices.size(); i++, k++) {
+            aux[k] = ballData.vertices[i]; // Adiciona os novos vértices
+        }
+
+        indices.insert(indices.end(), begin(ballData.indices), end(ballData.indices)); // Adiciona os novos índices
+
+        // Definir submesh para o novo objeto
+        SubMesh newBallSubMesh;
+        newBallSubMesh.indexCount = uint(ballData.indices.size());
+        newBallSubMesh.startIndex = totalIndexCount;
+        newBallSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        XMStoreFloat4x4(&obj.world, XMMatrixScaling(0.5f, 0.5f, 0.5f)); // Escala do objeto
+        obj.cbIndex = cbIndex;
+        obj.submesh = newBallSubMesh;
+        scene.push_back(obj); // Adiciona à cena
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        vertices = aux;
+
+        // Atualiza buffers de vértices e índices
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
+        }
+
     else if (input->KeyPress('2')) {
         OutputDebugString("Capsule\n");
+        graphics->ResetCommands();
 
+        // Carregar o arquivo .obj
+        ObjData capsuleData = LoadOBJ("capsule.obj");
+
+        // Atualizar a quantidade de vértices e índices
+        uint newTotalVertexCount = totalVertexCount + uint(capsuleData.vertices.size());
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex);
+
+        uint newTotalIndexCount = totalIndexCount + uint(capsuleData.indices.size());
+        const uint ibSize = newTotalIndexCount * sizeof(uint);
+
+        // Expandir o vetor de vértices e índices
+        std::vector<Vertex> aux(newTotalVertexCount);
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i]; // Copia os vértices já existentes
+        }
+
+        for (uint i{}; i < capsuleData.vertices.size(); i++, k++) {
+            aux[k] = capsuleData.vertices[i]; // Adiciona os novos vértices
+        }
+
+        indices.insert(indices.end(), begin(capsuleData.indices), end(capsuleData.indices)); // Adiciona os novos índices
+
+        // Definir submesh para o novo objeto
+        SubMesh newCapsuleSubMesh;
+        newCapsuleSubMesh.indexCount = uint(capsuleData.indices.size());
+        newCapsuleSubMesh.startIndex = totalIndexCount;
+        newCapsuleSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        XMStoreFloat4x4(&obj.world, XMMatrixScaling(0.5f, 0.5f, 0.5f)); // Escala do objeto
+        obj.cbIndex = cbIndex;
+        obj.submesh = newCapsuleSubMesh;
+        scene.push_back(obj); // Adiciona à cena
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        vertices = aux;
+
+        // Atualiza buffers de vértices e índices
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('3')) {
         OutputDebugString("House\n");
+        graphics->ResetCommands();
 
+        // Carregar o arquivo .obj
+        ObjData houseData = LoadOBJ("house.obj");
+
+        // Atualizar a quantidade de vértices e índices
+        uint newTotalVertexCount = totalVertexCount + uint(houseData.vertices.size());
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex);
+
+        uint newTotalIndexCount = totalIndexCount + uint(houseData.indices.size());
+        const uint ibSize = newTotalIndexCount * sizeof(uint);
+
+        // Expandir o vetor de vértices e índices
+        std::vector<Vertex> aux(newTotalVertexCount);
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i]; // Copia os vértices já existentes
+        }
+
+        for (uint i{}; i < houseData.vertices.size(); i++, k++) {
+            aux[k] = houseData.vertices[i]; // Adiciona os novos vértices
+        }
+
+        indices.insert(indices.end(), begin(houseData.indices), end(houseData.indices)); // Adiciona os novos índices
+
+        // Definir submesh para o novo objeto
+        SubMesh newHouseSubMesh;
+        newHouseSubMesh.indexCount = uint(houseData.indices.size());
+        newHouseSubMesh.startIndex = totalIndexCount;
+        newHouseSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        XMStoreFloat4x4(&obj.world, XMMatrixScaling(0.5f, 0.5f, 0.5f)); // Escala do objeto
+        obj.cbIndex = cbIndex;
+        obj.submesh = newHouseSubMesh;
+        scene.push_back(obj); // Adiciona à cena
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        vertices = aux;
+
+        // Atualiza buffers de vértices e índices
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('4')) {
         OutputDebugString("Monkey\n");
+        graphics->ResetCommands();
+
+        // Carregar o arquivo .obj
+        ObjData houseData = LoadOBJ("monkey.obj");
+
+        // Atualizar a quantidade de vértices e índices
+        uint newTotalVertexCount = totalVertexCount + uint(houseData.vertices.size());
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex);
+
+        uint newTotalIndexCount = totalIndexCount + uint(houseData.indices.size());
+        const uint ibSize = newTotalIndexCount * sizeof(uint);
+
+        // Expandir o vetor de vértices e índices
+        std::vector<Vertex> aux(newTotalVertexCount);
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i]; // Copia os vértices já existentes
+        }
+
+        for (uint i{}; i < houseData.vertices.size(); i++, k++) {
+            aux[k] = houseData.vertices[i]; // Adiciona os novos vértices
+        }
+
+        indices.insert(indices.end(), begin(houseData.indices), end(houseData.indices)); // Adiciona os novos índices
+
+        // Definir submesh para o novo objeto
+        SubMesh newHouseSubMesh;
+        newHouseSubMesh.indexCount = uint(houseData.indices.size());
+        newHouseSubMesh.startIndex = totalIndexCount;
+        newHouseSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        XMStoreFloat4x4(&obj.world, XMMatrixScaling(0.5f, 0.5f, 0.5f)); // Escala do objeto
+        obj.cbIndex = cbIndex;
+        obj.submesh = newHouseSubMesh;
+        scene.push_back(obj); // Adiciona à cena
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        vertices = aux;
+
+        // Atualiza buffers de vértices e índices
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
     else if (input->KeyPress('5')) {
         OutputDebugString("Thorus\n");
+        graphics->ResetCommands();
 
+        // Carregar o arquivo .obj
+        ObjData houseData = LoadOBJ("thorus.obj");
+
+        // Atualizar a quantidade de vértices e índices
+        uint newTotalVertexCount = totalVertexCount + uint(houseData.vertices.size());
+        const uint vbSize = newTotalVertexCount * sizeof(Vertex);
+
+        uint newTotalIndexCount = totalIndexCount + uint(houseData.indices.size());
+        const uint ibSize = newTotalIndexCount * sizeof(uint);
+
+        // Expandir o vetor de vértices e índices
+        std::vector<Vertex> aux(newTotalVertexCount);
+        int k = 0;
+
+        for (uint i{}; i < totalVertexCount; i++, k++) {
+            aux[i] = vertices[i]; // Copia os vértices já existentes
+        }
+
+        for (uint i{}; i < houseData.vertices.size(); i++, k++) {
+            aux[k] = houseData.vertices[i]; // Adiciona os novos vértices
+        }
+
+        indices.insert(indices.end(), begin(houseData.indices), end(houseData.indices)); // Adiciona os novos índices
+
+        // Definir submesh para o novo objeto
+        SubMesh newHouseSubMesh;
+        newHouseSubMesh.indexCount = uint(houseData.indices.size());
+        newHouseSubMesh.startIndex = totalIndexCount;
+        newHouseSubMesh.baseVertex = totalVertexCount;
+
+        Object obj;
+        XMStoreFloat4x4(&obj.world, XMMatrixScaling(0.5f, 0.5f, 0.5f)); // Escala do objeto
+        obj.cbIndex = cbIndex;
+        obj.submesh = newHouseSubMesh;
+        scene.push_back(obj); // Adiciona à cena
+
+        cbIndex++;
+
+        totalVertexCount = newTotalVertexCount;
+        totalIndexCount = newTotalIndexCount;
+
+        vertices = aux;
+
+        // Atualiza buffers de vértices e índices
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+        mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+        mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+        graphics->SubmitCommands();
     }
+   
+    else if (input->KeyPress(VK_TAB)) {
+        OutputDebugString("Tab pressionado\n");
+
+        // Alterna o índice do objeto selecionado
+        selecionado = (selecionado + 1) % scene.size();
+        OutputDebugString(("Objeto selecionado: " + std::to_string(selecionado) + "\n").c_str());
+
+        graphics->ResetCommands();
+
+        // Itera sobre os objetos na cena
+        for (auto& obj : scene) {
+            // Corrigir limite de iteração com base no número de vértices do submesh
+            for (uint i = 0; i < 100; ++i) {
+                if (obj.cbIndex == selecionado) {
+                    vertices[obj.submesh.baseVertex + i].color = XMFLOAT4(DirectX::Colors::Red);  // Objeto selecionado fica vermelho
+                }
+                else {
+                    vertices[obj.submesh.baseVertex + i].color = XMFLOAT4(DirectX::Colors::DimGray);  // Outros ficam cinza
+                }
+            }
+        }
+
+        // Atualiza o vertex buffer com os novos dados
+        mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+
+        // Submeter os comandos para a GPU executar
+        graphics->SubmitCommands();
+}
+
+    else if (input->KeyPress(VK_DELETE)) {
+        OutputDebugString("Tecla DEL pressionada\n");
+
+        if (!scene.empty()) {  // Verifica se há objetos na cena
+            // Verifica se o objeto selecionado está dentro dos limites
+            if (selecionado >= 0 && selecionado < scene.size()) {
+                OutputDebugString(("Deletando objeto: " + std::to_string(selecionado) + "\n").c_str());
+
+                // Obter o objeto a ser removido
+                const Object& objToDelete = scene[selecionado];
+
+                // Remover os vértices e índices associados ao objeto
+                const uint vertexCountToRemove = objToDelete.submesh.indexCount;
+                const uint startVertex = objToDelete.submesh.baseVertex;
+                const uint indexCountToRemove = objToDelete.submesh.indexCount;
+                const uint startIndex = objToDelete.submesh.startIndex;
+
+                // Remover vértices
+                vertices.erase(vertices.begin() + startVertex, vertices.begin() + startVertex + vertexCountToRemove);
+
+                // Remover índices
+                indices.erase(indices.begin() + startIndex, indices.begin() + startIndex + indexCountToRemove);
+
+                // Atualizar os submeshes dos objetos restantes (ajustando os índices)
+                for (uint i = selecionado + 1; i < scene.size(); ++i) {
+                    scene[i].submesh.baseVertex -= vertexCountToRemove;
+                    scene[i].submesh.startIndex -= indexCountToRemove;
+                }
+
+                // Remover o objeto da cena
+                scene.erase(scene.begin() + selecionado);
+
+                // Atualizar total de vértices e índices
+                totalVertexCount -= vertexCountToRemove;
+                totalIndexCount -= indexCountToRemove;
+
+                // Caso não haja mais objetos, o índice selecionado é resetado
+                if (scene.empty()) {
+                    selecionado = -1;
+                }
+                else {
+                    // Se houver objetos restantes, garantir que o índice de seleção seja válido
+                    selecionado = selecionado % scene.size();
+                }
+
+                // Atualizar os buffers de vértices e índices na GPU
+                const uint vbSize = totalVertexCount * sizeof(Vertex);
+                const uint ibSize = totalIndexCount * sizeof(uint);
+
+                graphics->ResetCommands();
+                mesh->VertexBuffer(vertices.data(), vbSize, sizeof(Vertex));
+                mesh->IndexBuffer(indices.data(), ibSize, DXGI_FORMAT_R32_UINT);
+                mesh->ConstantBuffer(sizeof(ObjectConstants), uint(scene.size()));
+
+                graphics->SubmitCommands();
+
+                OutputDebugString("Objeto deletado e buffers atualizados\n");
+            }
+            else {
+                OutputDebugString("Nenhum objeto selecionado para deletar\n");
+            }
+        }
+        else {
+            OutputDebugString("Cena vazia, nada para deletar\n");
+        }
+        }
+
+
+    // ativa ou desativa a visão de cima
+    if (input->KeyPress('V'))
+    {
+        topView = !topView;
+    }
+
 
     float mousePosX = (float)input->MouseX();
     float mousePosY = (float)input->MouseY();
 
-    if (input->KeyDown(VK_LBUTTON))
+    if (!topView) // Quando não está na visão de cima
     {
-        // cada pixel corresponde a 1/4 de grau
-        float dx = XMConvertToRadians(0.25f * (mousePosX - lastMousePosX));
-        float dy = XMConvertToRadians(0.25f * (mousePosY - lastMousePosY));
-
-        // atualiza ângulos com base no deslocamento do mouse 
-        // para orbitar a câmera ao redor da caixa
-        theta += dx;
-        phi += dy;
-
-        // restringe o ângulo de phi ]0-180[ graus
-        phi = phi < 0.1f ? 0.1f : (phi > (XM_PI - 0.1f) ? XM_PI - 0.1f : phi);
-    }
-    else if (input->KeyDown(VK_RBUTTON))
-    {
-        // cada pixel corresponde a 0.05 unidades
-        float dx = 0.05f * (mousePosX - lastMousePosX);
-        float dy = 0.05f * (mousePosY - lastMousePosY);
-
-        // atualiza o raio da câmera com base no deslocamento do mouse 
-        radius += dx - dy;
-
-        // restringe o raio (3 a 15 unidades)
-        radius = radius < 3.0f ? 3.0f : (radius > 15.0f ? 15.0f : radius);
-    }
-
-    lastMousePosX = mousePosX;
-    lastMousePosY = mousePosY;
-
-    // converte coordenadas esféricas para cartesianas
-    float x = radius * sinf(phi) * cosf(theta);
-    float z = radius * sinf(phi) * sinf(theta);
-    float y = radius * cosf(phi);
-
-    // constrói a matriz da câmera (view matrix)
-    XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
-    XMStoreFloat4x4(&View, view);
-
-    // carrega matriz de projeção em uma XMMATRIX
-    XMMATRIX proj = XMLoadFloat4x4(&Proj);
-
-    // ajusta o buffer constante de cada objeto
-    for (auto& obj : scene)
-    {
-        // modifica matriz de mundo da esfera
-        if (obj.cbIndex == 2)
+        if (input->KeyDown(VK_LBUTTON))
         {
-            XMStoreFloat4x4(&obj.world,
-                XMMatrixScaling(0.5f, 0.5f, 0.5f) *
-                XMMatrixRotationY(float(timer.Elapsed())) *
-                XMMatrixTranslation(0.0f, 0.5f, 0.0f));
+            // cada pixel corresponde a 1/4 de grau
+            float dx = XMConvertToRadians(0.25f * (mousePosX - lastMousePosX));
+            float dy = XMConvertToRadians(0.25f * (mousePosY - lastMousePosY));
+
+            // atualiza ângulos com base no deslocamento do mouse 
+            // para orbitar a câmera ao redor da caixa
+            theta += dx;
+            phi += dy;
+
+            // restringe o ângulo de phi ]0-180[ graus
+            phi = phi < 0.1f ? 0.1f : (phi > (XM_PI - 0.1f) ? XM_PI - 0.1f : phi);
+        }
+        else if (input->KeyDown(VK_RBUTTON))
+        {
+            // cada pixel corresponde a 0.05 unidades
+            float dx = 0.05f * (mousePosX - lastMousePosX);
+            float dy = 0.05f * (mousePosY - lastMousePosY);
+
+            // atualiza o raio da câmera com base no deslocamento do mouse 
+            radius += dx - dy;
+
+            // restringe o raio (3 a 15 unidades)
+            radius = radius < 3.0f ? 3.0f : (radius > 15.0f ? 15.0f : radius);
         }
 
-        // carrega matriz de mundo em uma XMMATRIX
-        XMMATRIX world = XMLoadFloat4x4(&obj.world);      
+        lastMousePosX = mousePosX;
+        lastMousePosY = mousePosY;
 
-        // constrói matriz combinada (world x view x proj)
-        XMMATRIX WorldViewProj = world * view * proj;        
+        // converte coordenadas esféricas para cartesianas
+        float x = radius * sinf(phi) * cosf(theta);
+        float z = radius * sinf(phi) * sinf(theta);
+        float y = radius * cosf(phi);
 
-        // atualiza o buffer constante com a matriz combinada
-        ObjectConstants constants;
-        XMStoreFloat4x4(&constants.WorldViewProj, XMMatrixTranspose(WorldViewProj));
-        mesh->CopyConstants(&constants, obj.cbIndex);
+        // constrói a matriz da câmera (view matrix)
+        XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
+        XMVECTOR target = XMVectorZero();
+        XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+        XMStoreFloat4x4(&View, view);
     }
+    else {
+        // Coloca a câmera acima dos objetos, olhando diretamente para baixo
+        XMVECTOR pos = XMVectorSet(0.0f, 10.0f, 0.0f, 1.0f);  // Altura Y=10.0 (ajuste conforme necessário)
+        XMVECTOR target = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f); // Centro da cena
+        XMVECTOR up = XMVectorSet(0.0f, 0.0f, -1.0f, 0.0f);    // Vetor "up" apontando para o eixo Z negativo
+        XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+        XMStoreFloat4x4(&View, view);
+    }
+    // carrega matriz de projeção em uma XMMATRIX
+    XMMATRIX proj = XMLoadFloat4x4(&Proj);
+    if (input->KeyPress('R')) {
+        spinning = !spinning; // Alterna o estado de rotação
+    }
+  
+        for (auto& obj : scene) {
+            // carrega matriz de mundo em uma XMMATRIX
+            XMMATRIX world = XMLoadFloat4x4(&obj.world);
+
+            // constrói matriz combinada (world x view x proj)
+            XMMATRIX WorldViewProj = world * XMLoadFloat4x4(&View) * proj;
+
+            // atualiza o buffer constante com a matriz combinada
+            ObjectConstants constants;
+            XMStoreFloat4x4(&constants.WorldViewProj, XMMatrixTranspose(WorldViewProj));
+            mesh->CopyConstants(&constants, obj.cbIndex);
+
+        }
+    
+
+  
+    /*
+    // ajusta o buffer constante de cada objeto
+   */
+   
+    
 }
 
 // ------------------------------------------------------------------------------
